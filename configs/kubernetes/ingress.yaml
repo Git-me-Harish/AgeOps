@@ -1,0 +1,126 @@
+---
+# cert-manager ClusterIssuer for Let's Encrypt TLS
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: harish@yourdomain.com          # ← replace with your email
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+      - http01:
+          ingress:
+            class: traefik
+
+---
+# Main Ingress — routes all services
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mlops-ingress
+  namespace: mlops
+  annotations:
+    kubernetes.io/ingress.class: "traefik"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    traefik.ingress.kubernetes.io/router.middlewares: "mlops-strip-prefix@kubernetescrd"
+spec:
+  tls:
+    - hosts:
+        - mlops.yourdomain.com            # ← replace
+      secretName: mlops-tls-cert
+  rules:
+    - host: mlops.yourdomain.com          # ← replace
+      http:
+        paths:
+          # UI (React)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mlops-ui
+                port:
+                  number: 80
+
+          # REST API
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: orchestrator-agent
+                port:
+                  number: 8000
+
+          # MLflow UI (protected by OAuth2 Proxy)
+          - path: /mlflow
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy
+                port:
+                  number: 4180
+
+          # Grafana (monitoring dashboards)
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: kube-prometheus-stack-grafana
+                port:
+                  number: 80
+
+---
+# UI Deployment + Service (exposed via Ingress)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlops-ui
+  namespace: mlops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlops-ui
+  template:
+    metadata:
+      labels:
+        app: mlops-ui
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101    # nginx user
+      containers:
+        - name: ui
+          image: your-dockerhub-user/mlops-ui:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 15
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlops-ui
+  namespace: mlops
+spec:
+  selector:
+    app: mlops-ui
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP

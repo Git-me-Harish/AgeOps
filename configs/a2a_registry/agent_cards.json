@@ -1,0 +1,124 @@
+{
+  "agents": [
+    {
+      "agent_id": "orchestrator",
+      "name": "Orchestrator Agent",
+      "version": "1.0.0",
+      "description": "Coordinates specialist agents, manages workflow state, routes between pipeline stages.",
+      "capabilities": ["orchestrate", "plan", "route", "error_handling"],
+      "mcp_tools": ["mlflow/search_runs", "mlflow/get_experiment_metrics"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 10,
+      "timeout_seconds": 3600,
+      "requires_human_approval_for": ["training_to_deployment", "initiate_rollback"]
+    },
+    {
+      "agent_id": "planner",
+      "name": "Planner Agent",
+      "version": "1.0.0",
+      "description": "Generates execution graphs and incorporates RL agent recommendations.",
+      "capabilities": ["plan", "optimize", "rl_integration"],
+      "mcp_tools": ["mlflow/search_runs", "mlflow/get_experiment_metrics"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 5,
+      "timeout_seconds": 60,
+      "requires_human_approval_for": []
+    },
+    {
+      "agent_id": "data_agent",
+      "name": "Data Agent",
+      "version": "1.0.0",
+      "description": "Ingests data from R2, validates with Great Expectations, detects drift via Evidently, registers features with Feast.",
+      "capabilities": ["data_ingestion", "data_validation", "drift_detection", "feature_engineering"],
+      "mcp_tools": ["mlflow/log_metrics"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 3,
+      "timeout_seconds": 600,
+      "requires_human_approval_for": []
+    },
+    {
+      "agent_id": "training_agent",
+      "name": "Training Agent",
+      "version": "1.0.0",
+      "description": "Launches Kubernetes training jobs, enables MLflow autolog, registers models.",
+      "capabilities": ["model_training", "hyperparameter_tuning", "kubernetes_jobs", "model_registration"],
+      "mcp_tools": ["mlflow/log_metrics", "mlflow/register_model"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 2,
+      "timeout_seconds": 3600,
+      "requires_human_approval_for": []
+    },
+    {
+      "agent_id": "evaluation_agent",
+      "name": "Evaluation Agent",
+      "version": "1.0.0",
+      "description": "Runs MLflow evaluate(), bias checks, and threshold gating before model promotion.",
+      "capabilities": ["model_evaluation", "bias_detection", "threshold_gating", "ab_testing"],
+      "mcp_tools": ["mlflow/get_model", "mlflow/log_metrics"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 3,
+      "timeout_seconds": 300,
+      "requires_human_approval_for": []
+    },
+    {
+      "agent_id": "deployment_agent",
+      "name": "Deployment Agent",
+      "version": "1.0.0",
+      "description": "Deploys models via KServe with canary rollout, monitors canary metrics, executes rollback on failure.",
+      "capabilities": ["model_deployment", "canary_rollout", "traffic_splitting", "rollback"],
+      "mcp_tools": ["mlflow/transition_stage"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 1,
+      "timeout_seconds": 1800,
+      "requires_human_approval_for": ["canary_to_full_rollout", "initiate_rollback"]
+    },
+    {
+      "agent_id": "monitoring_agent",
+      "name": "Monitoring Agent",
+      "version": "1.0.0",
+      "description": "Monitors production model accuracy, drift, and performance; exposes Prometheus metrics.",
+      "capabilities": ["drift_monitoring", "performance_monitoring", "alert_generation", "prometheus_metrics"],
+      "mcp_tools": ["mlflow/log_metrics"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 5,
+      "timeout_seconds": 120,
+      "requires_human_approval_for": []
+    },
+    {
+      "agent_id": "governance_agent",
+      "name": "Governance Agent",
+      "version": "1.0.0",
+      "description": "Enforces OPA policies, maintains audit trails, generates compliance reports.",
+      "capabilities": ["policy_enforcement", "audit_logging", "compliance_reporting", "accountability"],
+      "mcp_tools": ["mlflow/log_agent_decision"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 10,
+      "timeout_seconds": 60,
+      "requires_human_approval_for": []
+    },
+    {
+      "agent_id": "security_agent",
+      "name": "Security Agent",
+      "version": "1.0.0",
+      "description": "Pre-flight security checks, prompt injection detection, PII detection, Trivy scan integration.",
+      "capabilities": ["security_scanning", "prompt_injection_defense", "pii_detection", "vulnerability_scanning"],
+      "mcp_tools": [],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 10,
+      "timeout_seconds": 60,
+      "requires_human_approval_for": []
+    },
+    {
+      "agent_id": "rl_optimization_agent",
+      "name": "RL Optimization Agent",
+      "version": "1.0.0",
+      "description": "PPO-based agent that learns from MLflow traces to optimize hyperparameters and workflow structure.",
+      "capabilities": ["hyperparameter_optimization", "workflow_optimization", "predictive_rollback", "resource_allocation"],
+      "mcp_tools": ["mlflow/search_runs", "mlflow/get_experiment_metrics"],
+      "health_endpoint": "/health",
+      "max_concurrent_tasks": 1,
+      "timeout_seconds": 3600,
+      "requires_human_approval_for": ["workflow_restructuring", "production_rollback"]
+    }
+  ]
+}

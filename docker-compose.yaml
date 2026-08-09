@@ -1,0 +1,165 @@
+# docker-compose.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+# Full local development stack — mirrors production topology.
+# Usage:
+#   cp .env.example .env   # fill in R2 / Neon / LLM keys
+#   docker compose up -d
+#   open http://localhost:3000    (UI)
+#   open http://localhost:5000    (MLflow)
+#   open http://localhost:8000/api/docs  (API)
+# ══════════════════════════════════════════════════════════════════════════════
+version: "3.9"
+
+networks:
+  mlops-net:
+    driver: bridge
+
+volumes:
+  mlflow-db:
+  mlflow-artifacts:
+  prometheus-data:
+  grafana-data:
+  redis-data:
+
+services:
+
+  # ── PostgreSQL (local stand-in for Neon) ────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       mlops
+      POSTGRES_USER:     mlops
+      POSTGRES_PASSWORD: mlops_dev
+    volumes:
+      - mlflow-db:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks: [mlops-net]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "mlops"]
+      interval: 5s
+      retries: 5
+
+  # ── Redis (Feast online store) ──────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks: [mlops-net]
+
+  # ── MLflow tracking server ──────────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.17.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MLFLOW_BACKEND_STORE_URI:   postgresql://mlops:mlops_dev@postgres:5432/mlops
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlartifacts
+      # In dev, use local filesystem instead of R2
+    volumes:
+      - mlflow-artifacts:/mlartifacts
+    ports:
+      - "5000:5000"
+    networks: [mlops-net]
+    command: >
+      sh -c "pip install psycopg2-binary && 
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://mlops:mlops_dev@postgres:5432/mlops
+      --default-artifact-root /mlartifacts"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 10s
+      retries: 5
+      start_period: 15s
+
+  # ── MLflow MCP Server ───────────────────────────────────────────────────────
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      APP_ENV: development
+    ports:
+      - "8001:8001"
+    networks: [mlops-net]
+
+  # ── Orchestrator + REST API ─────────────────────────────────────────────────
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      DATABASE_URL:        postgresql+asyncpg://mlops:mlops_dev@postgres:5432/mlops
+      APP_ENV:             development
+      K8S_IN_CLUSTER:      "false"
+      DEBUG:               "true"
+    ports:
+      - "8000:8000"
+    networks: [mlops-net]
+    volumes:
+      # Mount source for hot-reload in dev
+      - ./agents:/app/agents
+      - ./mcp_servers:/app/mcp_servers
+      - ./configs:/app/configs
+    command: >
+      uvicorn mcp_servers.api_server:app
+      --host 0.0.0.0 --port 8000 --reload --log-level debug
+
+  # ── React UI (Vite dev server) ──────────────────────────────────────────────
+  ui:
+    image: node:20-alpine
+    working_dir: /ui
+    volumes:
+      - ./ui:/ui
+      - /ui/node_modules
+    environment:
+      VITE_API_BASE: http://localhost:8000
+    ports:
+      - "3000:3000"
+    networks: [mlops-net]
+    depends_on:
+      - orchestrator
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 3000"
+
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./configs/monitoring/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [mlops-net]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.1
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./configs/monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/ds.yaml:ro
+    ports:
+      - "3001:3000"
+    networks: [mlops-net]

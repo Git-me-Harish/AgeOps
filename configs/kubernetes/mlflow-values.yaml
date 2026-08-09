@@ -1,0 +1,72 @@
+# configs/kubernetes/mlflow-values.yaml
+# Deploy: helm install mlflow mlflow/mlflow -f mlflow-values.yaml -n mlflow --create-namespace
+
+mlflow:
+  tracking:
+    enabled: true
+    image:
+      repository: ghcr.io/mlflow/mlflow
+      tag: v2.17.2
+      pullPolicy: IfNotPresent
+    replicas: 1
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+    env:
+      - name: MLFLOW_BACKEND_STORE_URI
+        valueFrom:
+          secretKeyRef:
+            name: neon-credentials
+            key: connection-string
+      - name: MLFLOW_DEFAULT_ARTIFACT_ROOT
+        value: "s3://mlflow-artifacts/mlflow"
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: r2-credentials
+            key: access-key
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: r2-credentials
+            key: secret-key
+      - name: AWS_ENDPOINT_URL
+        valueFrom:
+          secretKeyRef:
+            name: r2-credentials
+            key: endpoint-url
+      - name: AWS_DEFAULT_REGION
+        value: "auto"
+    service:
+      type: ClusterIP
+      port: 5000
+    # Health probe
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 5000
+      initialDelaySeconds: 30
+      periodSeconds: 15
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 5000
+      initialDelaySeconds: 10
+      periodSeconds: 5
+
+  model-registry:
+    enabled: true
+
+  ui:
+    enabled: true
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "250m"

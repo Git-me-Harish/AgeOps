@@ -1,0 +1,120 @@
+# configs/kubernetes/network-policies.yaml
+
+---
+# MLflow tracking: only accept traffic from mlops namespace + port 5432 egress to Neon
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mlflow-restrict
+  namespace: mlflow
+spec:
+  podSelector:
+    matchLabels:
+      app: mlflow-tracking
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mlops
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 5000
+  egress:
+    # PostgreSQL to Neon
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Cloudflare R2 HTTPS
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # DNS
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# Agent pods: can reach MLflow + KServe + Prometheus, nothing else
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-restrict
+  namespace: mlops
+spec:
+  podSelector:
+    matchLabels:
+      tier: agent
+  policyTypes:
+    - Egress
+  egress:
+    # MLflow tracking server
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mlflow
+      ports:
+        - protocol: TCP
+          port: 5000
+    # MCP server (in-namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mlops
+      ports:
+        - protocol: TCP
+          port: 8001
+    # Prometheus
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+    # Cloudflare R2 + Kubernetes API
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # DNS
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# Monitoring stack: can scrape all namespaces
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-scrape
+  namespace: monitoring
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 3000
+        - protocol: TCP
+          port: 3100

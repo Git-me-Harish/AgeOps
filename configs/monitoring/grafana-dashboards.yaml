@@ -1,0 +1,15 @@
+# configs/monitoring/grafana-dashboards.yaml
+# Provisioned automatically by Grafana on startup.
+# Mount this at /etc/grafana/provisioning/dashboards/dashboards.yaml
+
+apiVersion: 1
+
+providers:
+  - name: MLOps Dashboards
+    folder: MLOps
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

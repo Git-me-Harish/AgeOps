@@ -1,0 +1,257 @@
+# .github/workflows/ci-cd.yaml
+name: Multi-Agent MLOps CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  REGISTRY: docker.io
+  IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}/mlops
+
+jobs:
+  # ── Job 1: Dependency & container vulnerability scan ─────────────────────────
+  security-scan:
+    name: Security Scan (Trivy + pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: pip-audit (dependency CVE scan)
+        run: |
+          pip install pip-audit
+          pip-audit --format=json -o pip-audit-results.json || true
+
+      - name: Upload pip-audit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-results
+          path: pip-audit-results.json
+
+      - name: Build agent image for scanning
+        run: docker build -t $IMAGE_PREFIX-orchestrator:${{ github.sha }} -f Dockerfile .
+
+      - name: Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}-orchestrator:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 0   # non-blocking — results uploaded to Security tab
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ── Job 2: Unit tests ─────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests with coverage
+        run: pytest tests/unit -v --cov=agents --cov=mcp_servers --cov-report=xml --cov-report=term-missing
+        env:
+          APP_ENV: test
+          MLFLOW_TRACKING_URI: sqlite:///test_mlflow.db
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+
+  # ── Job 3: Integration tests ──────────────────────────────────────────────────
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      mlflow:
+        image: ghcr.io/mlflow/mlflow:v2.17.2
+        ports: ["5001:5000"]
+        env:
+          MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow.db
+          MLFLOW_DEFAULT_ARTIFACT_ROOT: /tmp/mlflow-artifacts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait for MLflow
+        run: |
+          until curl -sf http://localhost:5001/health; do sleep 2; done
+
+      - name: Run integration tests
+        run: pytest tests/integration -v --timeout=120
+        env:
+          MLFLOW_TRACKING_URI: http://localhost:5001
+          APP_ENV: test
+          K8S_IN_CLUSTER: "false"
+
+  # ── Job 4: Build & push images ────────────────────────────────────────────────
+  build-push:
+    name: Build & Push Docker Images
+    needs: [security-scan, unit-tests, integration-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push orchestrator image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-orchestrator:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-orchestrator:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push MCP server image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.mcp
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-mcp-server:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-mcp-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push UI image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ui
+          file: ./ui/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-ui:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-ui:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Job 5: Deploy to staging ───────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging (Oracle Cloud K3s)
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_STAGING }}" > ~/.kube/config
+
+      - name: Update image tags in manifests
+        run: |
+          sed -i "s|mlops-orchestrator:latest|mlops-orchestrator:${{ github.sha }}|g" \
+            configs/kubernetes/agents/agents-deployment.yaml
+
+      - name: Apply staging manifests
+        run: |
+          kubectl apply -f configs/kubernetes/agents/ -n mlops
+          kubectl rollout status deployment/orchestrator-agent -n mlops --timeout=120s
+
+  # ── Job 6: AI evaluation gate ─────────────────────────────────────────────────
+  ai-eval-gate:
+    name: AI Evaluation Gate (MLflow)
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run MLflow evaluation against staging
+        run: python scripts/run_ai_eval.py --env staging
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_STAGING_URI }}
+
+      - name: Check evaluation thresholds
+        run: python scripts/check_eval_thresholds.py --min-accuracy 0.80 --max-drift 0.15
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_STAGING_URI }}
+
+  # ── Job 7: Deploy to production ───────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    needs: ai-eval-gate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_PRODUCTION }}" > ~/.kube/config
+
+      - name: Update image tags
+        run: |
+          sed -i "s|mlops-orchestrator:latest|mlops-orchestrator:${{ github.sha }}|g" \
+            configs/kubernetes/agents/agents-deployment.yaml
+
+      - name: Apply production manifests
+        run: |
+          kubectl apply -f configs/kubernetes/agents/ -n mlops
+          kubectl rollout status deployment/orchestrator-agent -n mlops --timeout=180s
+
+      - name: Notify success
+        run: echo "✅ Production deployment complete for ${{ github.sha }}"

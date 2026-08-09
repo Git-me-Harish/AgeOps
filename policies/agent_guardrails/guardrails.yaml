@@ -1,0 +1,124 @@
+# policies/agent_guardrails/guardrails.yaml
+# ════════════════════════════════════════════════════════════════════════
+# Agent Guardrails Configuration
+# Loaded by GovernanceAgent at startup. Defines hard constraints on
+# what each agent is allowed to do.
+#
+# Enforcement:
+#   - OPA Gatekeeper checks these at admission time (Kubernetes layer)
+#   - GovernanceAgent.check_policy() checks at runtime (agent layer)
+#   - Orchestrator enforces HITL gates for flagged transitions
+# ════════════════════════════════════════════════════════════════════════
+
+version: "1.0"
+
+global:
+  # Maximum number of agent iterations before the workflow is terminated
+  max_iterations: 20
+  # Maximum number of tool calls per workflow
+  max_tool_calls: 50
+  # Timeout per agent task (seconds)
+  task_timeout_seconds: 120
+  # Never allow agents to write to these paths
+  forbidden_filesystem_paths:
+    - "/etc"
+    - "/var/run/secrets"
+    - "/proc"
+    - "/sys"
+  # Never allow agents to call these external domains
+  forbidden_domains:
+    - "pastebin.com"
+    - "ngrok.io"
+  # All agent tool calls must be logged
+  require_audit_logging: true
+
+agents:
+  orchestrator:
+    # Transitions that require human approval before proceeding
+    require_human_approval:
+      - training_to_deployment
+      - canary_to_full_rollout
+      - initiate_rollback
+    # OPA policies that apply to this agent
+    opa_policies:
+      - block-unsafe-deployments
+    # Maximum parallel sub-tasks the orchestrator can fan out
+    max_parallel_tasks: 5
+
+  data_agent:
+    # Only allowed to read from these S3 prefixes
+    allowed_s3_prefixes:
+      - "s3://mlflow-artifacts/datasets/"
+      - "s3://mlflow-artifacts/reference/"
+    # Block writes to production datasets
+    forbidden_s3_prefixes:
+      - "s3://mlflow-artifacts/production/"
+    # Validation must pass before downstream agents proceed
+    validation_required: true
+    min_validation_score: 0.85
+
+  training_agent:
+    # Only allowed to create Kubernetes Jobs (not Deployments)
+    allowed_k8s_resource_kinds:
+      - Job
+    # Maximum resources a single training Job can request
+    max_job_resources:
+      cpu: "2000m"
+      memory: "4Gi"
+    # Cannot promote a model with accuracy below this threshold
+    min_model_accuracy: 0.80
+
+  evaluation_agent:
+    # Minimum thresholds — model is rejected if any fail
+    promotion_thresholds:
+      accuracy:         0.80
+      f1_score:         0.75
+      max_drift_score:  0.15
+    # Bias check must pass before promotion
+    require_bias_check: true
+
+  deployment_agent:
+    # Canary rollout steps (must be sequential percentages)
+    canary_steps: [10, 50, 100]
+    # Max error rate during canary before automatic rollback
+    max_canary_error_rate: 0.05
+    # Max p99 latency during canary (ms)
+    max_canary_p99_latency_ms: 500
+    # Require Governance Agent sign-off before 100% rollout
+    require_governance_signoff: true
+
+  monitoring_agent:
+    # Alert thresholds
+    alerts:
+      accuracy_degradation_threshold: 0.05
+      drift_score_alert_threshold:    0.15
+    # Polling interval (seconds)
+    polling_interval_seconds: 60
+
+  governance_agent:
+    # OPA endpoint (Gatekeeper in-cluster)
+    opa_endpoint: "http://gatekeeper-webhook-service.gatekeeper-system.svc.cluster.local:443"
+    # Fail-open only in development (fail-closed in production)
+    fail_closed_in_production: true
+    # Compliance frameworks to check
+    compliance_frameworks:
+      - GDPR
+      - SOC2
+
+  security_agent:
+    # Block pipeline if CRITICAL CVEs detected
+    block_on_critical_cves: true
+    # Block pipeline if HIGH CVEs > this count
+    max_high_cves_allowed: 5
+    # Run Trivy scan before every deployment
+    scan_before_deployment: true
+
+  rl_optimization_agent:
+    # RL agent can only suggest — cannot directly modify production
+    can_modify_production: false
+    # High-impact recommendations require human approval
+    require_human_approval:
+      - workflow_restructuring
+      - production_rollback
+    # CronJob schedule (K8s format)
+    training_schedule: "0 2 * * *"   # 2 AM UTC daily

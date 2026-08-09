@@ -1,0 +1,116 @@
+# configs/kubernetes/agents/rbac.yaml
+# Least-privilege RBAC — each agent gets only what it needs
+
+---
+# Orchestrator — needs to list/watch all agent pods + create jobs
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator-agent
+  namespace: mlops
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orchestrator-agent
+  namespace: mlops
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    verbs: ["create", "get", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orchestrator-agent
+  namespace: mlops
+subjects:
+  - kind: ServiceAccount
+    name: orchestrator-agent
+    namespace: mlops
+roleRef:
+  kind: Role
+  name: orchestrator-agent
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Training agent — can create Jobs only
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: training-agent
+  namespace: mlops
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: training-agent
+  namespace: mlops
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: training-agent
+  namespace: mlops
+subjects:
+  - kind: ServiceAccount
+    name: training-agent
+    namespace: mlops
+roleRef:
+  kind: Role
+  name: training-agent
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Deployment agent — can create/patch InferenceServices
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployment-agent
+  namespace: mlops
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-agent
+  namespace: mlops
+rules:
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    verbs: ["create", "get", "list", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployment-agent
+  namespace: mlops
+subjects:
+  - kind: ServiceAccount
+    name: deployment-agent
+    namespace: mlops
+roleRef:
+  kind: Role
+  name: deployment-agent
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,197 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus" }
+  ],
+  "title": "Multi-Agent MLOps Platform",
+  "uid":   "mlops-agents-001",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Production Model Accuracy",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 6, "x": 0,  "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1, "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "orange", "value": 0.75 },
+              { "color": "green",  "value": 0.85 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "mlops_model_accuracy",
+        "legendFormat": "{{model_name}}"
+      }]
+    },
+    {
+      "id": 2,
+      "title": "Data Drift Score",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1, "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 0.10 },
+              { "color": "red",    "value": 0.15 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "mlops_drift_score",
+        "legendFormat": "{{model_name}}"
+      }]
+    },
+    {
+      "id": 3,
+      "title": "Retraining Events (last 24 h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "increase(mlops_retraining_triggered_total[24h])"
+      }]
+    },
+    {
+      "id": 4,
+      "title": "API Request Rate (req/min)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "rate(http_requests_total{job='orchestrator-api'}[1m])"
+      }]
+    },
+    {
+      "id": 5,
+      "title": "Model Accuracy Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0.5, "max": 1 }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "mlops_model_accuracy",
+        "legendFormat": "{{model_name}}"
+      }]
+    },
+    {
+      "id": 6,
+      "title": "Drift Score Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 0.5 },
+        "overrides": [{
+          "matcher": { "id": "byName", "options": "drift" },
+          "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+        }]
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "mlops_drift_score",
+        "legendFormat": "{{model_name}}"
+      }]
+    },
+    {
+      "id": 7,
+      "title": "API Latency p99 (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job='orchestrator-api'}[5m])) * 1000",
+        "legendFormat": "p99"
+      }, {
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{job='orchestrator-api'}[5m])) * 1000",
+        "legendFormat": "p50"
+      }]
+    },
+    {
+      "id": 8,
+      "title": "Pod CPU Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": { "defaults": { "unit": "percent" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "sum(rate(container_cpu_usage_seconds_total{namespace='mlops'}[5m])) by (pod) * 100",
+        "legendFormat": "{{pod}}"
+      }]
+    },
+    {
+      "id": 9,
+      "title": "Canary Rollout Error Rate",
+      "type": "bargauge",
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "max": 0.2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red",   "value": 0.05 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "rate(http_requests_total{status=~'5..',service=~'mlops-model.*'}[2m])",
+        "legendFormat": "{{service}}"
+      }]
+    },
+    {
+      "id": 10,
+      "title": "Memory Usage per Pod",
+      "type": "bargauge",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "sum(container_memory_working_set_bytes{namespace='mlops', container!=''}) by (pod)",
+        "legendFormat": "{{pod}}"
+      }]
+    }
+  ],
+  "templating": {
+    "list": [{
+      "name":  "model_name",
+      "type":  "query",
+      "label": "Model",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "query": "label_values(mlops_model_accuracy, model_name)",
+      "multi": true,
+      "includeAll": true
+    }]
+  },
+  "annotations": {
+    "list": [{
+      "name":       "Retraining Events",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "expr":       "changes(mlops_retraining_triggered_total[1m]) > 0",
+      "iconColor":  "orange",
+      "step":       "60s"
+    }]
+  }
+}

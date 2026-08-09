@@ -1,0 +1,43 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile.mcp — MLflow MCP Server
+# ═══════════════════════════════════════════════════════════════════════════════
+FROM python:3.11-slim AS builder
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
+RUN pip install --upgrade pip
+COPY requirements.txt .
+# Only install the subset needed by the MCP server (no torch, no K8s, no SB3)
+RUN grep -E "^(fastapi|uvicorn|mlflow|pydantic|httpx|boto3|botocore|structlog|tenacity|python-dotenv|opentelemetry)" \
+    requirements.txt > mcp-requirements.txt && \
+    pip wheel --no-cache-dir --wheel-dir /build/wheels -r mcp-requirements.txt
+
+
+FROM python:3.11-slim
+LABEL org.opencontainers.image.title="mlops-mcp-server"
+
+RUN groupadd --gid 1000 appgroup && \
+    useradd  --uid 1000 --gid appgroup --no-create-home appuser
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /build/wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/*.whl && \
+    rm -rf /wheels
+
+COPY mcp_servers/mlflow_server.py ./mcp_servers/
+COPY configs/settings.py           ./configs/
+
+RUN chown -R appuser:appgroup /app
+USER appuser
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=20s --timeout=4s --start-period=10s --retries=3 \
+  CMD curl -sf http://localhost:8001/health || exit 1
+
+CMD ["uvicorn", "mcp_servers.mlflow_server:app", \
+     "--host", "0.0.0.0", "--port", "8001", \
+     "--workers", "2", "--log-level", "info"]

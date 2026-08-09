@@ -1,0 +1,21 @@
+# .dockerignore
+.env
+.env.*
+!.env.example
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+htmlcov
+.coverage
+*.egg-info
+dist
+build
+node_modules
+ui/dist
+*.log
+test_mlflow.db
+/models
+/feast/data

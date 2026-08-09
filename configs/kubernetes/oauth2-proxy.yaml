@@ -1,0 +1,105 @@
+# configs/kubernetes/oauth2-proxy.yaml
+# ════════════════════════════════════════════════════════════════════════
+# OAuth2 Proxy — protects the MLflow UI with GitHub OAuth
+#
+# Prerequisites:
+#   1. Create a GitHub OAuth App:
+#      GitHub → Settings → Developer Settings → OAuth Apps → New OAuth App
+#      Homepage URL:    https://<YOUR_DOMAIN>
+#      Callback URL:    https://<YOUR_DOMAIN>/oauth2/callback
+#
+#   2. Create the oauth2-secrets Kubernetes Secret:
+#      kubectl create secret generic oauth2-secrets \
+#        --namespace mlflow \
+#        --from-literal=cookie-secret=$(openssl rand -base64 32) \
+#        --from-literal=github-client-id=<GITHUB_CLIENT_ID> \
+#        --from-literal=github-client-secret=<GITHUB_CLIENT_SECRET>
+# ════════════════════════════════════════════════════════════════════════
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: mlflow
+  labels:
+    app: oauth2-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 2000
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 4180
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          args:
+            - --provider=github
+            - --email-domain=*
+            - --upstream=http://mlflow-tracking.mlflow.svc.cluster.local:5000
+            - --http-address=0.0.0.0:4180
+            - --reverse-proxy=true
+            - --skip-provider-button=true
+            # Uncomment to restrict to a specific GitHub org:
+            # - --github-org=your-github-org
+          env:
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-secrets
+                  key: cookie-secret
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-secrets
+                  key: github-client-id
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-secrets
+                  key: github-client-secret
+            - name: OAUTH2_PROXY_REDIRECT_URL
+              value: "https://mlops.yourdomain.com/oauth2/callback"   # ← replace
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: mlflow
+spec:
+  selector:
+    app: oauth2-proxy
+  ports:
+    - port: 4180
+      targetPort: 4180
+  type: ClusterIP

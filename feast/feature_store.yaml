@@ -1,0 +1,10 @@
+# feast/feature_store.yaml
+project: mlops
+registry: data/registry.db
+provider: local
+online_store:
+  type: redis
+  connection_string: "redis://redis.mlops.svc.cluster.local:6379"
+offline_store:
+  type: file
+entity_key_serialization_version: 2

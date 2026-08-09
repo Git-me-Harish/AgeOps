@@ -1,0 +1,55 @@
+# Secrets — NEVER commit
+.env
+.env.local
+.env.staging
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+pip-audit-results.json
+eval_results.json
+
+# Tests / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+test_mlflow.db
+
+# MLflow local data
+mlruns/
+mlartifacts/
+
+# RL model artifacts
+/models/
+
+# Feast
+feast/data/
+feast/registry.db
+
+# Node / UI
+ui/node_modules/
+ui/dist/
+
+# Kubernetes secrets (never commit)
+kubeconfig
+*.kubeconfig
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

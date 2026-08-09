@@ -1,0 +1,246 @@
+# configs/kubernetes/agents/agents-deployment.yaml
+# Apply: kubectl apply -f configs/kubernetes/agents/ -n mlops
+
+---
+# Namespace 
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlops
+
+---
+# Orchestrator Agent 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-agent
+  namespace: mlops
+  labels:
+    app: orchestrator-agent
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-agent
+  template:
+    metadata:
+      labels:
+        app: orchestrator-agent
+    spec:
+      serviceAccountName: orchestrator-agent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: orchestrator
+          image: your-dockerhub-user/mlops-orchestrator:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow-tracking.mlflow.svc.cluster.local:5000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: neon-credentials
+                  key: connection-string
+            - name: R2_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: access-key
+            - name: R2_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: secret-key
+            - name: R2_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: endpoint-url
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-credentials
+                  key: openai-api-key
+            - name: APP_ENV
+              value: "production"
+            - name: K8S_IN_CLUSTER
+              value: "true"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-agent
+  namespace: mlops
+spec:
+  selector:
+    app: orchestrator-agent
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# MLflow MCP Server 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-mcp-server
+  namespace: mlops
+  labels:
+    app: mlflow-mcp-server
+    tier: mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mlflow-mcp-server
+  template:
+    metadata:
+      labels:
+        app: mlflow-mcp-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: mcp-server
+          image: your-dockerhub-user/mlops-mcp-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow-tracking.mlflow.svc.cluster.local:5000"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-mcp-server
+  namespace: mlops
+spec:
+  selector:
+    app: mlflow-mcp-server
+  ports:
+    - port: 8001
+      targetPort: 8001
+  type: ClusterIP
+
+---
+# RL Optimizer CronJob (runs once per day) 
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rl-optimizer
+  namespace: mlops
+spec:
+  schedule: "0 2 * * *"   # 2 AM UTC daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: rl-optimizer
+              image: your-dockerhub-user/mlops-rl-agent:latest
+              imagePullPolicy: Always
+              command: ["python", "-m", "rl_agent.rl_optimizer"]
+              resources:
+                requests:
+                  memory: "1Gi"
+                  cpu: "500m"
+                limits:
+                  memory: "2Gi"
+                  cpu: "1000m"
+              env:
+                - name: MLFLOW_TRACKING_URI
+                  value: "http://mlflow-tracking.mlflow.svc.cluster.local:5000"
+                - name: RL_TRAINING_TIMESTEPS
+                  value: "10000"
+
+---
+# Budget Monitor CronJob 
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: budget-monitor
+  namespace: mlops
+spec:
+  schedule: "0 0 * * *"   # midnight UTC daily
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: budget-monitor
+              image: your-dockerhub-user/mlops-orchestrator:latest
+              command: ["python", "scripts/budget_monitor.py"]
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "50m"
+              env:
+                - name: CLOUDFLARE_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: cloudflare-secrets
+                      key: api-token
+                - name: CLOUDFLARE_ACCOUNT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: cloudflare-secrets
+                      key: account-id
+                - name: NEON_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: neon-secrets
+                      key: api-key
+                - name: NEON_PROJECT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: neon-secrets
+                      key: project-id
