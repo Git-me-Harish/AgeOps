@@ -8,8 +8,9 @@ import os
 import pytest
 import mlflow
 
-# ── Force test environment before any app code is imported ───────────────────
-os.environ.setdefault("APP_ENV",             "test")
+# Force test environment before any app code is imported
+os.environ["APP_ENV"] = "test"
+os.environ["DEBUG"] = "false"
 os.environ.setdefault("MLFLOW_TRACKING_URI", "sqlite:///test_mlflow.db")
 os.environ.setdefault("DATABASE_URL",        "postgresql+asyncpg://mlops:mlops_dev@localhost:5432/mlops_test")
 os.environ.setdefault("K8S_IN_CLUSTER",      "false")
@@ -56,3 +57,25 @@ def sample_dataframe():
     import numpy as np
     rng = np.random.default_rng(42)
     return pd.DataFrame(rng.standard_normal((100, 5)), columns=["a", "b", "c", "d", "e"])
+
+
+@pytest.fixture
+def redis_container_url():
+    """
+    Real Redis endpoint for tests that deliberately exercise the actual
+    Redis pub/sub wire (Phase 6 WebSocket relay), not a mock — same
+    "verify against real infra" discipline used for Postgres/Prometheus/
+    Loki in Phase 5. Points at REDIS_TEST_URL if set, else the disposable
+    container convention used during this project's verification passes
+    (redis:7-alpine on localhost:16379). Skips (not fails) when nothing is
+    reachable, so the rest of the suite still runs without Docker.
+    """
+    url = os.environ.get("REDIS_TEST_URL", "redis://localhost:16379")
+    try:
+        import redis as sync_redis
+        c = sync_redis.from_url(url, socket_connect_timeout=1)
+        c.ping()
+        c.close()
+    except Exception:
+        pytest.skip(f"No real Redis reachable at {url} — set REDIS_TEST_URL or run redis:7-alpine on :16379")
+    return url

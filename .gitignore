@@ -37,6 +37,15 @@ feast/registry.db
 # Node / UI
 ui/node_modules/
 ui/dist/
+ui/.next/
+ui/next-env.d.ts
+ui/tsconfig.tsbuildinfo
+
+# Local-only dev scratch (real model artifacts / DB trained and used only
+# for verifying the Phase 6 UI build against a live local stack — not part
+# of the actual codebase)
+local_serving_model/
+local_ui_mlflow.db
 
 # Kubernetes secrets (never commit)
 kubeconfig

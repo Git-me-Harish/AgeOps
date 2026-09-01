@@ -1,0 +1,41 @@
+# configs/kubernetes/kustomization.yaml
+# Apply everything declaratively: kubectl apply -k configs/kubernetes/
+#
+# Closes a real gap: mlops_policy.rego was previously only ever loaded into
+# the cluster via an imperative `kubectl create configmap` step documented
+# in a comment (agents-deployment.yaml, agents/opa_policies/mlops_policy.rego
+# headers) — meaning a fresh cluster apply left the OPA sidecar mounting a
+# ConfigMap that was never actually created, so GovernanceAgent always hit
+# connection-refused / fail-closed with the policy engine never evaluating
+# anything for real. configMapGenerator makes the ConfigMap a first-class,
+# declarative part of the manifest set, generated straight from the source
+# .rego file so it can never drift from it.
+#
+# Note: configMapGenerator appends a content hash to the ConfigMap name
+# (e.g. mlops-opa-policy-<hash>) and kustomize rewrites every reference to
+# it automatically — this also means every apply that changes the policy
+# text creates a *new* ConfigMap and triggers a rolling pod restart, which
+# reloads OPA immediately (in addition to the --watch hot-reload path used
+# for the Phase 6 in-place policy editor, which patches the existing
+# ConfigMap object directly rather than going through kustomize).
+
+namespace: mlops
+
+resources:
+  - agents/rbac.yaml
+  - agents/agents-deployment.yaml
+  - ingress.yaml
+  - network-policies.yaml
+  - oauth2-proxy.yaml
+
+configMapGenerator:
+  - name: mlops-opa-policy
+    files:
+      - mlops_policy.rego=../opa_policies/mlops_policy.rego
+
+# The Phase 6 policy editor patches this ConfigMap by its literal name
+# (agents/governance/opa_admin.py calls patch_namespaced_config_map(name=
+# "mlops-opa-policy", ...)) — disable the default content-hash suffix so
+# the name stays stable and predictable instead of changing on every apply.
+generatorOptions:
+  disableNameSuffixHash: true

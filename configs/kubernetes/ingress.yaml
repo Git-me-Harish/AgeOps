@@ -35,17 +35,31 @@ spec:
     - host: mlops.yourdomain.com          # ← replace
       http:
         paths:
-          # UI (React)
+          # UI (Next.js 14, standalone Node server — replaces the V1
+          # static-nginx build; see ui/Dockerfile)
           - path: /
             pathType: Prefix
             backend:
               service:
                 name: mlops-ui
                 port:
-                  number: 80
+                  number: 3000
 
           # REST API
           - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: orchestrator-agent
+                port:
+                  number: 8000
+
+          # WebSocket real-time events (Phase 6 §6.3) — Traefik proxies
+          # HTTP/1.1 Upgrade requests transparently over the same path with
+          # no special annotation needed; kept as its own rule so it's easy
+          # to find and so a future dedicated WS ingress-class change
+          # doesn't have to touch the /api rule.
+          - path: /ws
             pathType: Prefix
             backend:
               service:
@@ -72,14 +86,18 @@ spec:
                   number: 80
 
 ---
-# UI Deployment + Service (exposed via Ingress)
+# UI Deployment + Service (exposed via Ingress) — Next.js 14 standalone
+# server (`next build` output: 'standalone', `node server.js`), replacing
+# the V1 static-build+nginx image. Runs as the non-root `node` user
+# baked into the node:20-alpine base image (uid 1000) rather than nginx's
+# uid 101.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mlops-ui
   namespace: mlops
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: mlops-ui
@@ -90,26 +108,80 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101    # nginx user
+        runAsUser: 1000
       containers:
         - name: ui
           image: your-dockerhub-user/mlops-ui:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 80
+            - containerPort: 3000
           resources:
             requests:
-              memory: "64Mi"
-              cpu: "50m"
-            limits:
-              memory: "128Mi"
+              memory: "192Mi"
               cpu: "100m"
+            limits:
+              memory: "384Mi"
+              cpu: "300m"
+          env:
+            - name: NEXTAUTH_URL
+              value: "https://mlops.yourdomain.com"   # ← replace with the real ingress host
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nextauth-credentials
+                  key: secret
+            - name: GITHUB_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: nextauth-credentials
+                  key: github-client-id
+                  optional: true   # unset → app runs in dev-mode/unauthenticated banner state
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nextauth-credentials
+                  key: github-client-secret
+                  optional: true
+            # Real database sessions + RBAC (ui/auth.ts, ui/lib/server/rbac.ts) —
+            # same Neon Postgres the Python services use, plain postgres://
+            # (the `pg` driver, not asyncpg). Without this, sessions silently
+            # fall back to JWT-only (auth.ts) and Admin > Users has nothing to
+            # manage.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: neon-credentials
+                  key: connection-string-node   # plain postgres:// variant — the Python DATABASE_URL secret key is +asyncpg
+            - name: REDIS_URL
+              value: "redis://redis.mlops.svc.cluster.local:6379"
+            - name: INITIAL_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: nextauth-credentials
+                  key: initial-admin-email
+                  optional: true   # unset → nobody is auto-promoted to admin; grant manually via direct DB access once, then use Admin > Users
+            - name: API_INTERNAL_URL
+              value: "http://orchestrator-agent.mlops.svc.cluster.local:8000"
+            - name: REGISTRY_SERVER_INTERNAL_URL
+              value: "http://registry-server.mlops.svc.cluster.local:8002"
+            - name: PACKAGING_SERVER_INTERNAL_URL
+              value: "http://packaging-server.mlops.svc.cluster.local:8003"
+            - name: MONITORING_SERVER_INTERNAL_URL
+              value: "http://monitoring-server.mlops.svc.cluster.local:8004"
+            - name: PROMETHEUS_INTERNAL_URL
+              value: "http://prometheus.mlops.svc.cluster.local:9090"
           livenessProbe:
             httpGet:
-              path: /
-              port: 80
+              path: /api/healthz
+              port: 3000
             initialDelaySeconds: 10
             periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
 
 ---
 apiVersion: v1
@@ -121,6 +193,6 @@ spec:
   selector:
     app: mlops-ui
   ports:
-    - port: 80
-      targetPort: 80
+    - port: 3000
+      targetPort: 3000
   type: ClusterIP

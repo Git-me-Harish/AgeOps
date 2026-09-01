@@ -98,6 +98,65 @@ spec:
           port: 53
 
 ---
+# Backend API servers (orchestrator + the 3 MCP servers): previously had
+# NO ingress restriction at all — this file only ever defined *egress*
+# rules for tier=agent pods, so any pod anywhere in the cluster could call
+# orchestrator-agent:8000, registry-server:8002, packaging-server:8003, or
+# monitoring-server:8004 directly, bypassing the Next.js BFF gateway
+# entirely (and therefore bypassing the RBAC/rate-limiting it enforces —
+# CORS is a browser-side control and does nothing against pod-to-pod
+# traffic). Found while wiring up real auth/RBAC for the UI. Restricts
+# ingress to: the UI (the BFF), other tier=agent pods in this namespace
+# (the CronJobs/monitor-loop that call these services directly today),
+# and the monitoring namespace (Prometheus scraping /metrics). This is
+# coarser than a per-service allowlist would be — any tier=agent pod can
+# reach any of these four services — but it closes the "anything in the
+# cluster, full stop" gap, which is the one that actually matters.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-api-restrict
+  namespace: mlops
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [orchestrator-agent, registry-server, packaging-server, monitoring-server]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mlops-ui
+        - podSelector:
+            matchLabels:
+              tier: agent
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 8002
+        - protocol: TCP
+          port: 8003
+        - protocol: TCP
+          port: 8004
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 8002
+        - protocol: TCP
+          port: 8003
+        - protocol: TCP
+          port: 8004
+
+---
 # Monitoring stack: can scrape all namespaces
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

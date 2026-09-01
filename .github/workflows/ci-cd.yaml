@@ -13,7 +13,7 @@ env:
   IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}/mlops
 
 jobs:
-  # ── Job 1: Dependency & container vulnerability scan ─────────────────────────
+  # Job 1: Dependency & container vulnerability scan
   security-scan:
     name: Security Scan (Trivy + pip-audit)
     runs-on: ubuntu-latest
@@ -57,7 +57,7 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-  # ── Job 2: Unit tests ─────────────────────────────────────────────────────────
+  # Job 2: Unit tests
   unit-tests:
     name: Unit Tests (pytest)
     runs-on: ubuntu-latest
@@ -84,7 +84,7 @@ jobs:
         with:
           file: coverage.xml
 
-  # ── Job 3: Integration tests ──────────────────────────────────────────────────
+  # Job 3: Integration tests
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -118,7 +118,7 @@ jobs:
           APP_ENV: test
           K8S_IN_CLUSTER: "false"
 
-  # ── Job 4: Build & push images ────────────────────────────────────────────────
+  # Job 4: Build & push images
   build-push:
     name: Build & Push Docker Images
     needs: [security-scan, unit-tests, integration-tests]
@@ -172,7 +172,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Job 5: Deploy to staging ───────────────────────────────────────────────────
+  # Job 5: Deploy to staging
   deploy-staging:
     name: Deploy to Staging (Oracle Cloud K3s)
     needs: build-push
@@ -199,7 +199,7 @@ jobs:
           kubectl apply -f configs/kubernetes/agents/ -n mlops
           kubectl rollout status deployment/orchestrator-agent -n mlops --timeout=120s
 
-  # ── Job 6: AI evaluation gate ─────────────────────────────────────────────────
+  # Job 6: AI evaluation gate
   ai-eval-gate:
     name: AI Evaluation Gate (MLflow)
     needs: deploy-staging
@@ -226,7 +226,7 @@ jobs:
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_STAGING_URI }}
 
-  # ── Job 7: Deploy to production ───────────────────────────────────────────────
+  # Job 7: Deploy to production
   deploy-production:
     name: Deploy to Production
     needs: ai-eval-gate
