@@ -114,3 +114,68 @@ roleRef:
   kind: Role
   name: deployment-agent
   apiGroup: rbac.authorization.k8s.io
+
+---
+# Packaging server — spawns Kaniko build / Trivy scan / Syft SBOM Jobs
+# (agents/packaging/kaniko_builder.py, trivy_scanner.py, sbom_generator.py
+# all call BatchV1Api().create_namespaced_job from mcp_servers/packaging_server.py).
+# This ServiceAccount was missing entirely — packaging_server.py had no
+# in-cluster identity capable of creating the Jobs it issues.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: packaging-server
+  namespace: mlops
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: packaging-server
+  namespace: mlops
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: packaging-server
+  namespace: mlops
+subjects:
+  - kind: ServiceAccount
+    name: packaging-server
+    namespace: mlops
+roleRef:
+  kind: Role
+  name: packaging-server
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# kaniko-builder — identity of the spawned build/scan/sbom Job pods
+# themselves (kaniko_builder.py references this SA name directly at
+# spec.template.spec.serviceAccountName). No cluster permissions needed —
+# these Jobs only push/pull images and write to R2 via env-provided
+# credentials, not the Kubernetes API — so this SA is intentionally bound
+# to no Role (default: zero permissions beyond the default token).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kaniko-builder
+  namespace: mlops
+
+---
+# Orchestrator's pod-status endpoint (Phase 6 Agent Intelligence page) reads
+# pods across the whole mlops namespace via the orchestrator-agent SA above
+# (already has pods get/list/watch) — no separate SA needed for that read.
+
+---
+# Registry / monitoring servers — read-only Neon + MLflow access only, no
+# Kubernetes API calls, so no ServiceAccount/Role needed beyond the
+# namespace default (explicitly noted so this isn't mistaken for an
+# oversight).

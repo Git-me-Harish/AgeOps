@@ -78,6 +78,10 @@ spec:
               value: "production"
             - name: K8S_IN_CLUSTER
               value: "true"
+            - name: CORS_ALLOWED_ORIGINS
+              value: '["https://mlops.yourdomain.com"]'   # ← replace with the real ingress host
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.mlops.svc.cluster.local:4317"
           livenessProbe:
             httpGet:
               path: /api/health
@@ -90,6 +94,54 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+        # OPA sidecar — GovernanceAgent.check_policy() calls 127.0.0.1:8181
+        # in-process (ADR-002: no network hop, fail-closed in production if
+        # this container is unhealthy). This was designed in
+        # agents/governance_agent.py's module docstring from Phase 2 but the
+        # sidecar itself was never actually added to this manifest — without
+        # it, GovernanceAgent always hits connection-refused and, correctly,
+        # always fails closed, but the policy engine never actually
+        # evaluates anything in a real deployment.
+        - name: opa
+          image: openpolicyagent/opa:latest
+          args:
+            - "run"
+            - "--server"
+            - "--addr=127.0.0.1:8181"
+            # --watch: the mounted ConfigMap volume is updated in place by
+            # kubelet (~60s sync) when the Phase 6 policy editor patches
+            # mlops-opa-policy — without --watch, OPA only loads the file
+            # once at container start and a saved edit would silently never
+            # take effect until the next pod restart.
+            - "--watch"
+            - "/policies/mlops_policy.rego"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          volumeMounts:
+            - name: opa-policy
+              mountPath: /policies
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: opa-policy
+          # Create with:
+          #   kubectl create configmap mlops-opa-policy \
+          #     --from-file=mlops_policy.rego=configs/opa_policies/mlops_policy.rego \
+          #     -n mlops
+          # (documented in configs/opa_policies/mlops_policy.rego's header —
+          # kept as an imperative step, not duplicated inline here, so the
+          # ConfigMap can never silently drift from the source .rego file.)
+          configMap:
+            name: mlops-opa-policy
 
 ---
 apiVersion: v1
@@ -160,14 +212,266 @@ spec:
   type: ClusterIP
 
 ---
-# RL Optimizer CronJob (runs once per day) 
+# Registry Server — mcp_servers/registry_server.py (port 8002). Existed as
+# code since the Phase 3/4 pass but was never actually deployed: no
+# Deployment/Service backed it, so /registry/v1/* has never been reachable
+# in a real cluster. Reuses the mlops-orchestrator image (already contains
+# agents/, mcp_servers/, configs/) with a different uvicorn target, the same
+# pattern already used by monitor-loop / process-retraining-triggers below.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-server
+  namespace: mlops
+  labels:
+    app: registry-server
+    tier: mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: registry-server
+  template:
+    metadata:
+      labels:
+        app: registry-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: registry-server
+          image: your-dockerhub-user/mlops-orchestrator:latest
+          imagePullPolicy: Always
+          command: ["uvicorn", "mcp_servers.registry_server:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "2"]
+          ports:
+            - containerPort: 8002
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow-tracking.mlflow.svc.cluster.local:5000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: neon-credentials
+                  key: connection-string
+            - name: APP_ENV
+              value: "production"
+            - name: CORS_ALLOWED_ORIGINS
+              value: '["https://mlops.yourdomain.com"]'   # ← replace with the real ingress host
+          livenessProbe:
+            httpGet: { path: /health, port: 8002 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /health, port: 8002 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-server
+  namespace: mlops
+spec:
+  selector:
+    app: registry-server
+  ports:
+    - port: 8002
+      targetPort: 8002
+  type: ClusterIP
+
+---
+# Packaging Server — mcp_servers/packaging_server.py (port 8003). Same
+# never-deployed gap as registry-server. Uses the packaging-server
+# ServiceAccount added in rbac.yaml (needed for the Kaniko/Trivy/Syft Job
+# creation this server triggers).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: packaging-server
+  namespace: mlops
+  labels:
+    app: packaging-server
+    tier: mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: packaging-server
+  template:
+    metadata:
+      labels:
+        app: packaging-server
+    spec:
+      serviceAccountName: packaging-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: packaging-server
+          image: your-dockerhub-user/mlops-orchestrator:latest
+          imagePullPolicy: Always
+          command: ["uvicorn", "mcp_servers.packaging_server:app", "--host", "0.0.0.0", "--port", "8003", "--workers", "2"]
+          ports:
+            - containerPort: 8003
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: neon-credentials
+                  key: connection-string
+            - name: R2_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: access-key
+            - name: R2_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: secret-key
+            - name: R2_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: endpoint-url
+            - name: IMAGE_REGISTRY_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: image-registry-credentials
+                  key: username
+            - name: IMAGE_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: image-registry-credentials
+                  key: password
+            - name: APP_ENV
+              value: "production"
+            - name: K8S_IN_CLUSTER
+              value: "true"
+            - name: CORS_ALLOWED_ORIGINS
+              value: '["https://mlops.yourdomain.com"]'   # ← replace with the real ingress host
+          livenessProbe:
+            httpGet: { path: /health, port: 8003 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /health, port: 8003 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: packaging-server
+  namespace: mlops
+spec:
+  selector:
+    app: packaging-server
+  ports:
+    - port: 8003
+      targetPort: 8003
+  type: ClusterIP
+
+---
+# Monitoring Server — mcp_servers/monitoring_server.py (port 8004). Same
+# never-deployed gap; built in the Phase 5 pass but only ever exercised via
+# direct DB/HTTP calls in tests, never given a cluster Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring-server
+  namespace: mlops
+  labels:
+    app: monitoring-server
+    tier: mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: monitoring-server
+  template:
+    metadata:
+      labels:
+        app: monitoring-server
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: monitoring-server
+          image: your-dockerhub-user/mlops-orchestrator:latest
+          imagePullPolicy: Always
+          command: ["uvicorn", "mcp_servers.monitoring_server:app", "--host", "0.0.0.0", "--port", "8004", "--workers", "2"]
+          ports:
+            - containerPort: 8004
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: neon-credentials
+                  key: connection-string
+            - name: APP_ENV
+              value: "production"
+            - name: CORS_ALLOWED_ORIGINS
+              value: '["https://mlops.yourdomain.com"]'   # ← replace with the real ingress host
+          livenessProbe:
+            httpGet: { path: /health, port: 8004 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /health, port: 8004 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monitoring-server
+  namespace: mlops
+spec:
+  selector:
+    app: monitoring-server
+  ports:
+    - port: 8004
+      targetPort: 8004
+  type: ClusterIP
+
+---
+# RL Optimizer CronJob — weekly (plan §5.4: "retrained weekly — needs
+# sufficient new data", not daily; also fixed the entrypoint to actually
+# match the enriched training path in scripts/train_rl_weekly.py)
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: rl-optimizer
   namespace: mlops
 spec:
-  schedule: "0 2 * * *"   # 2 AM UTC daily
+  schedule: "0 3 * * 0"   # 3 AM UTC every Sunday
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
@@ -183,7 +487,7 @@ spec:
             - name: rl-optimizer
               image: your-dockerhub-user/mlops-rl-agent:latest
               imagePullPolicy: Always
-              command: ["python", "-m", "rl_agent.rl_optimizer"]
+              command: ["python", "scripts/train_rl_weekly.py"]
               resources:
                 requests:
                   memory: "1Gi"
@@ -194,8 +498,122 @@ spec:
               env:
                 - name: MLFLOW_TRACKING_URI
                   value: "http://mlflow-tracking.mlflow.svc.cluster.local:5000"
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: neon-credentials
+                      key: connection-string
                 - name: RL_TRAINING_TIMESTEPS
                   value: "10000"
+
+---
+# Retraining Trigger Processor CronJob (Phase 5 §5.3 closed loop) — polls
+# workflow_triggers for rows MonitoringAgent wrote on a CRITICAL breach and
+# launches a real workflow for each via
+# OrchestratorAgent.process_pending_triggers().
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: process-retraining-triggers
+  namespace: mlops
+spec:
+  schedule: "*/5 * * * *"   # every 5 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: process-triggers
+              image: your-dockerhub-user/mlops-orchestrator:latest
+              command: ["python", "scripts/process_triggers.py"]
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+              env:
+                - name: MLFLOW_TRACKING_URI
+                  value: "http://mlflow-tracking.mlflow.svc.cluster.local:5000"
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: neon-credentials
+                      key: connection-string
+                - name: APP_ENV
+                  value: "production"
+                - name: K8S_IN_CLUSTER
+                  value: "true"
+
+---
+# Production Monitoring Loop (Phase 5 §5.2) — long-running, not a CronJob:
+# ticks MonitoringAgent every settings.monitoring_interval_seconds for every
+# model currently in the MLflow Registry's Production stage.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitor-loop
+  namespace: mlops
+  labels:
+    app: monitor-loop
+    tier: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monitor-loop
+  template:
+    metadata:
+      labels:
+        app: monitor-loop
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: monitor-loop
+          image: your-dockerhub-user/mlops-orchestrator:latest
+          command: ["python", "scripts/monitor_loop.py"]
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow-tracking.mlflow.svc.cluster.local:5000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: neon-credentials
+                  key: connection-string
+            - name: R2_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: access-key
+            - name: R2_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: secret-key
+            - name: R2_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: r2-credentials
+                  key: endpoint-url
+            - name: APP_ENV
+              value: "production"
 
 ---
 # Budget Monitor CronJob 

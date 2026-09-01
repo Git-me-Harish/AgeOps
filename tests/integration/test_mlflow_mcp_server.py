@@ -74,22 +74,18 @@ async def test_search_runs_returns_list(client):
 
 
 # ── Register model ────────────────────────────────────────────────────────────
+# Direct registration through this server was retired in Phase 3 — it bypassed
+# RegistrationGate's mandatory-tag validation. Registration now goes through
+# POST /registry/v1/register_model (mcp_servers/registry_server.py) instead.
 
 @pytest.mark.asyncio
-async def test_register_model(client):
-    mock_result = MagicMock()
-    mock_result.name = "mlops-model"
-    mock_result.version = "5"
-    mock_result.status = "READY"
-    with patch("mcp_servers.mlflow_server.mlflow.register_model", return_value=mock_result):
-        resp = await client.post("/mlflow/v1/register_model", json={
-            "model_uri": "runs:/fake_run/model",
-            "model_name": "mlops-model",
-        })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["name"] == "mlops-model"
-    assert data["version"] == "5"
+async def test_register_model_endpoint_retired(client):
+    resp = await client.post("/mlflow/v1/register_model", json={
+        "model_uri": "runs:/fake_run/model",
+        "model_name": "mlops-model",
+    })
+    assert resp.status_code == 410
+    assert "registry/v1/register_model" in resp.json()["detail"]
 
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -102,17 +98,16 @@ async def test_rate_limit_header_not_hit_under_limit(client):
 
 
 # ── Transition stage ──────────────────────────────────────────────────────────
+# Retired in Phase 3 — it bypassed every PromotionStateMachine gate (eval,
+# HITL, security, governance, OCI). Promotion now goes through
+# POST /registry/v1/promote_model instead.
 
 @pytest.mark.asyncio
-async def test_transition_stage(client):
-    with patch("mcp_servers.mlflow_server.mlflow.tracking.MlflowClient") as mock_cls:
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        resp = await client.post("/mlflow/v1/transition_stage", json={
-            "model_name": "mlops-model",
-            "version": "3",
-            "stage": "Production",
-        })
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["new_stage"] == "Production"
+async def test_transition_stage_endpoint_retired(client):
+    resp = await client.post("/mlflow/v1/transition_stage", json={
+        "model_name": "mlops-model",
+        "version": "3",
+        "stage": "Production",
+    })
+    assert resp.status_code == 410
+    assert "registry/v1/promote_model" in resp.json()["detail"]

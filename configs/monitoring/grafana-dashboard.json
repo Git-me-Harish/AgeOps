@@ -5,7 +5,7 @@
   "title": "Multi-Agent MLOps Platform",
   "uid":   "mlops-agents-001",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "15s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
@@ -31,11 +31,12 @@
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
         "expr": "mlops_model_accuracy",
         "legendFormat": "{{model_name}}"
-      }]
+      }],
+      "description": "MonitoringAgent's periodic accuracy check from ground_truth_labels (Phase 5). Empty until a labelling pipeline supplies delayed ground truth — this is honest, not a bug: MonitoringAgent reports accuracy=None (no series) rather than a fabricated number when no labels exist yet."
     },
     {
       "id": 2,
-      "title": "Data Drift Score",
+      "title": "Ingestion Data Drift Score",
       "type": "gauge",
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
       "fieldConfig": {
@@ -53,37 +54,65 @@
       },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "expr": "mlops_drift_score",
+        "expr": "mlops_data_drift_score",
+        "legendFormat": "{{dataset_uri}}"
+      }],
+      "description": "DataAgent's ingestion-time drift check (Phase 1) — current dataset vs its reference. This panel previously queried mlops_drift_score, a metric name nothing in the codebase has ever exported; fixed to the real metric name and its real labels (workflow_id, dataset_uri — not model_name)."
+    },
+    {
+      "id": 11,
+      "title": "Serving Drift Score (live traffic)",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 1, "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 0.15 },
+              { "color": "red",    "value": 0.30 }
+            ]
+          }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "mlops_serving_drift_score",
         "legendFormat": "{{model_name}}"
-      }]
+      }],
+      "description": "MonitoringAgent's live inference-traffic drift check (Phase 5 §5.2) — sampled predictions vs the model's training dataset. New in this pass; thresholds match settings.drift_warn_threshold / drift_critical_threshold (the same values that trigger a retraining workflow_trigger)."
     },
     {
       "id": 3,
       "title": "Retraining Events (last 24 h)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
       "fieldConfig": { "defaults": { "unit": "short" } },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "expr": "increase(mlops_retraining_triggered_total[24h])"
+        "expr": "sum(increase(mlops_retraining_triggered_total[24h])) by (reason)",
+        "legendFormat": "{{reason}}"
       }]
     },
     {
       "id": 4,
-      "title": "API Request Rate (req/min)",
+      "title": "API Request Rate (req/s)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
       "fieldConfig": { "defaults": { "unit": "reqps" } },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "expr": "rate(http_requests_total{job='orchestrator-api'}[1m])"
-      }]
+        "expr": "sum(rate(http_requests_total{job='orchestrator-api'}[1m]))"
+      }],
+      "description": "mcp_servers/api_server.py previously had no /metrics endpoint at all despite prometheus.yaml already scraping it and this panel already querying it — real middleware added."
     },
     {
       "id": 5,
       "title": "Model Accuracy Over Time",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "fieldConfig": {
         "defaults": { "unit": "percentunit", "min": 0.5, "max": 1 }
       },
@@ -95,9 +124,9 @@
     },
     {
       "id": 6,
-      "title": "Drift Score Over Time",
+      "title": "Serving Drift Score Over Time",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "fieldConfig": {
         "defaults": { "unit": "percentunit", "min": 0, "max": 0.5 },
         "overrides": [{
@@ -107,31 +136,70 @@
       },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "expr": "mlops_drift_score",
+        "expr": "mlops_serving_drift_score",
         "legendFormat": "{{model_name}}"
       }]
     },
     {
-      "id": 7,
-      "title": "API Latency p99 (ms)",
+      "id": 12,
+      "title": "Per-Feature Serving Drift",
       "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "mlops_serving_feature_drift_score{model_name=~\"$model_name\"}",
+        "legendFormat": "{{feature_name}}"
+      }],
+      "description": "Per-feature breakdown from MonitoringAgent's serving drift check — which specific features are drifting, not just the aggregate score."
+    },
+    {
+      "id": 13,
+      "title": "Model p99 Latency (snapshot)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "fieldConfig": { "defaults": { "unit": "ms" } },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job='orchestrator-api'}[5m])) * 1000",
+        "expr": "mlops_model_p99_latency_ms{model_name=~\"$model_name\"}",
+        "legendFormat": "{{model_name}} p99"
+      }],
+      "description": "MonitoringAgent's periodic snapshot (Phase 5), queried from mlops_prediction_duration_seconds_bucket at check time. See panel 15 for the continuously-scraped raw version."
+    },
+    {
+      "id": 7,
+      "title": "API Latency p99 / p50 (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job='orchestrator-api'}[5m])) by (le)) * 1000",
         "legendFormat": "p99"
       }, {
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{job='orchestrator-api'}[5m])) * 1000",
+        "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job='orchestrator-api'}[5m])) by (le)) * 1000",
         "legendFormat": "p50"
       }]
+    },
+    {
+      "id": 15,
+      "title": "Inference Server p99 Latency (raw, per model version)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "histogram_quantile(0.99, sum(rate(mlops_prediction_duration_seconds_bucket[2m])) by (le, model_name, model_version)) * 1000",
+        "legendFormat": "{{model_name}} v{{model_version}}"
+      }],
+      "description": "Continuously scraped straight from each packaged inference server pod — the same metric names deployment_agent.py's canary gate and monitoring_agent.py's serving-metrics check query. Previously targeted http_request_duration_seconds_bucket{service=...}, which the inference server has never exported — fixed to the real mlops_prediction_duration_seconds_bucket / mlops_predictions_total names and their real model_name/model_version labels (not a KServe service-name label, which doesn't distinguish a canary's new model_version from the stable one)."
     },
     {
       "id": 8,
       "title": "Pod CPU Usage",
       "type": "timeseries",
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 30 },
       "fieldConfig": { "defaults": { "unit": "percent" } },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
@@ -141,9 +209,9 @@
     },
     {
       "id": 9,
-      "title": "Canary Rollout Error Rate",
+      "title": "Canary / Serving Error Rate",
       "type": "bargauge",
-      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 18 },
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 36 },
       "fieldConfig": {
         "defaults": { "unit": "percentunit", "max": 0.2,
           "thresholds": {
@@ -157,15 +225,16 @@
       },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "expr": "rate(http_requests_total{status=~'5..',service=~'mlops-model.*'}[2m])",
-        "legendFormat": "{{service}}"
-      }]
+        "expr": "sum(rate(mlops_predictions_total{status=\"error\"}[2m])) by (model_name, model_version) / sum(rate(mlops_predictions_total[2m])) by (model_name, model_version)",
+        "legendFormat": "{{model_name}} v{{model_version}}"
+      }],
+      "description": "Same query deployment_agent.py's canary gate and monitoring_agent.py's serving-metrics check now use. Previously queried http_requests_total{status=~'5..',service=~'mlops-model.*'} — a metric/label combination that has never existed, meaning this panel (and, more seriously, the canary gate itself) always saw zero data."
     },
     {
       "id": 10,
       "title": "Memory Usage per Pod",
       "type": "bargauge",
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 18 },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 36 },
       "fieldConfig": { "defaults": { "unit": "bytes" } },
       "targets": [{
         "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },

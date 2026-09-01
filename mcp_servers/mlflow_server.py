@@ -37,7 +37,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -208,40 +208,42 @@ async def search_runs(request: SearchRunsRequest) -> SearchRunsResponse:
 
 @app.post("/mlflow/v1/register_model", response_model=RegisterModelResponse)
 async def register_model(request: RegisterModelRequest) -> RegisterModelResponse:
-    """Register a model in the MLflow Model Registry."""
-    try:
-        result = mlflow.register_model(
-            model_uri=request.model_uri,
-            name=request.model_name,
-            tags=request.tags,
-        )
-        return RegisterModelResponse(
-            name=result.name,
-            version=str(result.version),
-            status=result.status,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    """
+    REMOVED (Phase 3): this endpoint used to call mlflow.register_model()
+    directly, with no tag validation — a hard bypass of RegistrationGate's
+    18-mandatory-tag check. Registration now goes exclusively through
+    POST /registry/v1/register_model (mcp_servers/registry_server.py), which
+    validates tags before ever touching the MLflow Registry. See
+    agents/registry/promotion_state_machine.py's module docstring: "no direct
+    mlflow.transition_model_version_stage() calls anywhere else in the codebase"
+    — the same rule applies to register_model.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "This endpoint is retired. Use POST /registry/v1/register_model "
+            "on the registry MCP server — it enforces the Phase 3 mandatory "
+            "tag gate that this endpoint bypassed."
+        ),
+    )
 
 
 @app.post("/mlflow/v1/transition_stage", response_model=TransitionStageResponse)
 async def transition_stage(request: TransitionStageRequest) -> TransitionStageResponse:
-    """Transition a model version to a new lifecycle stage."""
-    try:
-        client = mlflow.tracking.MlflowClient()
-        client.transition_model_version_stage(
-            name=request.model_name,
-            version=request.version,
-            stage=request.stage,
-            archive_existing_versions=request.archive_existing,
-        )
-        return TransitionStageResponse(
-            model_name=request.model_name,
-            version=request.version,
-            new_stage=request.stage,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    """
+    REMOVED (Phase 3): this endpoint used to call
+    client.transition_model_version_stage() directly, bypassing every
+    PromotionStateMachine gate (evaluation, HITL, security, governance, OCI).
+    Promotion now goes exclusively through POST /registry/v1/promote_model.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "This endpoint is retired. Use POST /registry/v1/promote_model "
+            "on the registry MCP server — it enforces the promotion gates "
+            "(evaluation, HITL, security, governance, OCI) that this endpoint bypassed."
+        ),
+    )
 
 
 @app.post("/mlflow/v1/log_agent_decision", response_model=AgentDecisionResponse)

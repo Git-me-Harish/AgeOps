@@ -1,10 +1,27 @@
-# feast/feature_store.yaml
 project: mlops
-registry: data/registry.db
 provider: local
-online_store:
-  type: redis
-  connection_string: "redis://redis.mlops.svc.cluster.local:6379"
+
+# Registry
+registry:
+  registry_type: sql
+  path: ${DATABASE_SYNC_URL}
+  cache_ttl_seconds: 60
+
+# Offline store 
 offline_store:
   type: file
+
+# Online store - Redis running in K3s (mlops namespace, redis service)
+online_store:
+  type: redis
+  connection_string: ${FEAST_REDIS_CONNECTION_STRING:-redis://redis.mlops.svc.cluster.local:6379}
+  # Redis key prefix — isolates feast keys from other Redis consumers (LLM cache, etc.)
+  key_ttl_seconds: 86400    # 24h — matches numeric_features_fv TTL
+
+# Entity key serialisation 
 entity_key_serialization_version: 2
+
+# Flags 
+flags:
+  alpha_features: false
+  on_demand_transforms: false
